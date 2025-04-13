@@ -1498,6 +1498,31 @@ void test_gh_5377() {
     }
 }
 
+void test_gh_5406() {
+    g_regexTester.should_match(string(1000, 'a'), "(?:a)*");
+
+    string input = "aba";
+    for (int i = 0; i < 9; ++i) {
+        input += input;
+    }
+    ptrdiff_t length = input.end() - input.begin();
+    {
+        test_regex simple_rep_capture_group(&g_regexTester, "^((a)(b)(a))*$");
+        simple_rep_capture_group.should_search_match_capture_groups(input, input, match_default,
+            {{length - 3, length}, {length - 3, length - 2}, {length - 2, length - 1}, {length - 1, length}});
+    }
+    {
+        test_regex simple_rep_captures_within_noncapture(&g_regexTester, "^(?:(a)(b)(a))*$");
+        simple_rep_captures_within_noncapture.should_search_match_capture_groups(
+            input, input, match_default, {{length - 3, length - 2}, {length - 2, length - 1}, {length - 1, length}});
+    }
+    {
+        test_regex simple_min_rep_capture_group(&g_regexTester, "^((a)(b)(a)){512}$");
+        simple_min_rep_capture_group.should_search_match_capture_groups(input, input, match_default,
+            {{length - 3, length}, {length - 3, length - 2}, {length - 2, length - 1}, {length - 1, length}});
+    }
+}
+
 int main() {
     test_dev10_449367_case_insensitivity_should_work();
     test_dev11_462743_regex_collate_should_not_disable_regex_icase();
@@ -1541,6 +1566,7 @@ int main() {
     test_gh_5371();
     test_gh_5374();
     test_gh_5377();
+    test_gh_5406();
 
     return g_regexTester.result();
 }

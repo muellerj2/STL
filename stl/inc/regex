@@ -4609,15 +4609,17 @@ void _Parser<_FwdIt, _Elem, _RxTraits>::_Disjunction() { // check for valid disj
         _Nfa._End_group(_Pos3);
     }
 
-    _Node_base* _Pos2 = _Nfa._Begin_if(_Pos1);
-    while (_Mchar == _Meta_bar) { // append terms as long as we keep finding | characters
-        _Next();
-        if (!_Alternative()) { // zero-length trailing alternative
-            _Node_base* _Pos3 = _Nfa._Begin_group();
-            _Nfa._End_group(_Pos3);
-        }
+    if (_Mchar == _Meta_bar) {
+        _Node_base* _Pos2 = _Nfa._Begin_if(_Pos1);
+        do { // append terms as long as we keep finding | characters
+            _Next();
+            if (!_Alternative()) { // zero-length trailing alternative
+                _Node_base* _Pos3 = _Nfa._Begin_group();
+                _Nfa._End_group(_Pos3);
+            }
 
-        _Nfa._Else_if(_Pos1, _Pos2);
+            _Nfa._Else_if(_Pos1, _Pos2);
+        } while (_Mchar == _Meta_bar);
     }
 }
 
@@ -4640,8 +4642,13 @@ inline void _Calculate_loop_simplicity(_Node_base* _Nx, _Node_base* _Ne, _Node_r
         case _N_assert:
         case _N_neg_assert:
             // visit the assertion body
-            // note _Outer_rep being reset: the assertion regex is completely independent
-            _Calculate_loop_simplicity(static_cast<_Node_assert*>(_Nx)->_Child, nullptr, nullptr);
+            // Note _Outer_rep being reset when _Outer_rep is non-greedy or it is a negative assertion:
+            // The non-greedy simple-loop optimization can handle relative changes in the capture group positions
+            // and the negative assertion never yields any successful captures.
+            // A (future) greedy simple-loop optimization, however, will likely not be able to handle such relative
+            // changes in capture group positions, so exclude them for now in preparation for such capture groups.
+            _Calculate_loop_simplicity(static_cast<_Node_assert*>(_Nx)->_Child, nullptr,
+                (_Outer_rep->_Flags & _Fl_greedy) && !(_Nx->_Flags & _Fl_negate) ? _Outer_rep : nullptr);
             break;
         case _N_rep:
             // _Node_rep inside another _Node_rep makes both not simple
