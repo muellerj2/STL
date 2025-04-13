@@ -1621,8 +1621,8 @@ public:
 
         _Begin          = _First;
         _Tgt_state._Cur = _First;
-        _Tgt_state._Grp_valid.resize(_Get_ncap());
-        _Tgt_state._Grps.resize(_Get_ncap());
+        _Tgt_state._Grp_valid.resize(_Ncap);
+        _Tgt_state._Grps.resize(_Ncap);
         _Cap                  = static_cast<bool>(_Matches);
         _Full                 = _Full_match;
         _Max_complexity_count = _REGEX_MAX_COMPLEXITY_COUNT;
@@ -1635,9 +1635,9 @@ public:
         }
 
         if (_Matches) { // copy results to _Matches
-            _Matches->_Resize(_Get_ncap());
+            _Matches->_Resize(_Ncap);
             const auto& _Result = _Longest ? _Res : _Tgt_state;
-            for (unsigned int _Idx = 0; _Idx < _Get_ncap(); ++_Idx) { // copy submatch _Idx
+            for (unsigned int _Idx = 0; _Idx < _Ncap; ++_Idx) { // copy submatch _Idx
                 if (_Result._Grp_valid[_Idx]) { // copy successful match
                     _Matches->_At(_Idx).matched = true;
                     _Matches->_At(_Idx).first   = _Result._Grps[_Idx]._Begin;
@@ -1679,8 +1679,6 @@ private:
     bool _Match_pat(_Node_base*);
     bool _Better_match();
     bool _Is_wbound() const;
-
-    unsigned int _Get_ncap() const;
 
     _It _Begin;
     _It _End;
@@ -3490,7 +3488,7 @@ bool _Matcher2<_BidIt, _Elem, _RxTraits, _It, _Alloc>::_Do_class(_Node_base* _Nx
 template <class _BidIt, class _Elem, class _RxTraits, class _It, class _Alloc>
 bool _Matcher2<_BidIt, _Elem, _RxTraits, _It,
     _Alloc>::_Better_match() { // check for better match under leftmost-longest rule
-    for (unsigned int _Ix = 0; _Ix < _Get_ncap(); ++_Ix) { // check each capture group
+    for (unsigned int _Ix = 0; _Ix < _Ncap; ++_Ix) { // check each capture group
         // any match (even an empty one) is better than no match at all
         if (_Res._Grp_valid[_Ix] != _Tgt_state._Grp_valid[_Ix]) {
             return _Tgt_state._Grp_valid[_Ix];
@@ -3529,11 +3527,6 @@ bool _Matcher2<_BidIt, _Elem, _RxTraits, _It, _Alloc>::_Is_wbound() const {
             return (_Mflags & regex_constants::match_not_bow) == 0 && _Is_word(*_Tgt_state._Cur);
         }
     }
-}
-
-template <class _BidIt, class _Elem, class _RxTraits, class _It, class _Alloc>
-unsigned int _Matcher2<_BidIt, _Elem, _RxTraits, _It, _Alloc>::_Get_ncap() const {
-    return _Ncap;
 }
 
 template <class _BidIt, class _Elem, class _RxTraits, class _It, class _Alloc>
@@ -3647,7 +3640,8 @@ bool _Matcher2<_BidIt, _Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _N
                 if (!(_Sflags
                         & (regex_constants::basic | regex_constants::extended | regex_constants::grep
                             | regex_constants::egrep | regex_constants::awk))) {
-                    // CodeQL [SM02323] Comparing unchanging unsigned int _Node->_Idx to decreasing size_t _Idx is safe.
+                    // CodeQL [SM02323] Comparing unchanging unsigned int _Node->_Idx to decreasing size_t _Idx is
+                    // safe.
                     for (size_t _Idx = _Tgt_state._Grp_valid.size(); _Node->_Idx < _Idx;) {
                         _Tgt_state._Grp_valid[--_Idx] = false;
                     }
@@ -4041,8 +4035,8 @@ void _Parser<_FwdIt, _Elem, _RxTraits>::_Expect(_Meta_type _St, regex_constants:
 }
 
 template <class _FwdIt, class _Elem, class _RxTraits>
-int _Parser<_FwdIt, _Elem, _RxTraits>::_Do_digits(
-    int _Base, int _Initial, int _Count, regex_constants::error_type _Error_type) { // translate digits to numeric value
+int _Parser<_FwdIt, _Elem, _RxTraits>::_Do_digits(int _Base, int _Initial, int _Count,
+    regex_constants::error_type _Error_type) { // translate digits to numeric value
     int _Chv;
     _Val = _Initial;
     while (_Count != 0 && (_Chv = _Traits.value(_Char, _Base)) != -1) { // append next digit
