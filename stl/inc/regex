@@ -2145,7 +2145,11 @@ public:
     template <class _BidIt, class _Alsubmatch>
     void _Copy_captures(match_results<_BidIt, _Alsubmatch>& _Matches);
 
-    _It _Skip(_It _First, _It _Last, const _Node_base* _Node_arg = nullptr, unsigned int _Recursion_depth = 0U);
+    _It _Skip_str(_It, _It, const _Node_str<_Elem>* _Node);
+    _It _Skip_class(_It, _It, const _Node_class<_Elem, _RxTraits>* _Node);
+    pair<const _Node_base*, _It> _Initial_skip(
+        _It _First, _It _Last, const _Node_base* _Node_arg = nullptr, unsigned int _Recursion_depth = 0U);
+    _It _Followup_skip(_It _First, _It _Last, const _Node_base* _Nx, unsigned int _Recursion_depth = 0U);
 
 private:
     long long _Complexity_limit;
@@ -2776,10 +2780,25 @@ bool _Regex_search2(_It _First, _It _Last, match_results<_BidIt, _Alloc>* _Match
     } else if (_First != _Last && !(_Flgs & regex_constants::match_continuous)) { // try more on suffixes
         _Mx._Setf(regex_constants::match_prev_avail);
         _Mx._Clearf(regex_constants::_Match_not_null);
-        while ((_First = _Mx._Skip(++_First, _Last)) != _Last) {
-            if (_Mx._Match(_First, false)) { // found match starting at _First
+        auto _Initial_skip_result = _Mx._Initial_skip(++_First, _Last);
+        _First                    = _Initial_skip_result.second;
+        if (_First != _Last) {
+            if (_Mx._Match(_First, false)) {
                 _Found = true;
-                break;
+            } else if (_Initial_skip_result.first) {
+                while ((_First = _Mx._Followup_skip(++_First, _Last, _Initial_skip_result.first)) != _Last) {
+                    if (_Mx._Match(_First, false)) { // found match starting at _First
+                        _Found = true;
+                        break;
+                    }
+                }
+            } else {
+                for (++_First; _First != _Last; ++_First) {
+                    if (_Mx._Match(_First, false)) { // found match starting at _First
+                        _Found = true;
+                        break;
+                    }
+                }
             }
         }
 
@@ -4861,42 +4880,206 @@ void _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Copy_captures(match_results<_Bid
     _Matches._Null().second = _End;
 }
 
+_INLINE_VAR constexpr char _Rx_line_terminators_char[] = {static_cast<char>(_Meta_cr), static_cast<char>(_Meta_nl)};
+_INLINE_VAR constexpr wchar_t _Rx_line_terminators_wchar_t[]    = {static_cast<wchar_t>(_Meta_cr),
+       static_cast<wchar_t>(_Meta_nl), static_cast<wchar_t>(_Meta_ls), static_cast<wchar_t>(_Meta_ps)};
+_INLINE_VAR constexpr unsigned int _Rx_skip_max_recursion_depth = 50U;
+
+template <class _Elem, class _BidIt>
+_BidIt _Skip_bol_multiline(_BidIt _First, _BidIt _Last) {
+    // multiline mode: check for embedded line terminator
+    // return iterator to character just after the newline; for input like "\nabc"
+    // matching "^abc", _First could be pointing at 'a', so we need to check --_First for '\n'
+    if (!_STD _Is_ecmascript_line_terminator(*_STD _Prev_iter(_First))) {
+        if constexpr (sizeof(_Elem) == 1) {
+            _First = _STD find_first_of(_First, _Last, _Rx_line_terminators_char, _STD end(_Rx_line_terminators_char));
+        } else {
+            _First =
+                _STD find_first_of(_First, _Last, _Rx_line_terminators_wchar_t, _STD end(_Rx_line_terminators_wchar_t));
+        }
+
+        if (_First != _Last) {
+            ++_First;
+        }
+    }
+
+    return _First;
+}
+
+template <class _Elem, class _BidIt>
+_BidIt _Skip_eol_multiline(_BidIt _First, _BidIt _Last) {
+    // multiline mode: matches at next line terminator or end of input
+    if constexpr (sizeof(_Elem) == 1) {
+        return _STD find_first_of(_First, _Last, _Rx_line_terminators_char, _STD end(_Rx_line_terminators_char));
+    } else {
+        return _STD find_first_of(_First, _Last, _Rx_line_terminators_wchar_t, _STD end(_Rx_line_terminators_wchar_t));
+    }
+}
+
 template <class _Elem, class _RxTraits, class _It, class _Alloc>
-_It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Skip(
-    _It _First, const _It _Last, const _Node_base* const _Node_arg, const unsigned int _Recursion_depth) {
-    // skip until possible match
+_It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Skip_str(_It _First, _It _Last,
+    const _Node_str<_Elem>* _Node) { // check for string match
+    auto _Str = _Node->_Data._Str();
+    return _STD _Search_translate_left(_First, _Last, _Str, _Str + _Node->_Data._Size(), _Traits, _Sflags);
+}
+
+template <class _Elem, class _RxTraits, class _It, class _Alloc>
+_It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Skip_class(
+    _It _First, _It _Last, const _Node_class<_Elem, _RxTraits>* _Node) { // look for character class match
+    for (; _First != _Last; ++_First) {
+        if (_Do_class(_Node, _First) != _First) {
+            return _First;
+        }
+    }
+    return _First;
+}
+
+template <class _BidIt>
+_BidIt _Skip_wbound(_BidIt _First, _BidIt _Last, bool _Negated) {
+    bool _Prev_word = _STD _Is_word(*_STD _Prev_iter(_First));
+    for (; _First != _Last; ++_First) {
+        bool _Next_word = _STD _Is_word(*_First);
+        if (_Negated == (_Next_word == _Prev_word)) {
+            break;
+        }
+        _Prev_word = _Next_word;
+    }
+    return _First;
+}
+
+template <class _Elem, class _RxTraits, class _It, class _Alloc>
+pair<const _Node_base*, _It> _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Initial_skip(
+    _It _First, _It _Last, const _Node_base* const _Node_arg, unsigned int _Recursion_depth) {
+    // skip until possible match and return node used for finding the first possible skip
     // assumes --_First is valid
     static constexpr char _Line_terminators_char[]       = {static_cast<char>(_Meta_cr), static_cast<char>(_Meta_nl)};
     static constexpr wchar_t _Line_terminators_wchar_t[] = {static_cast<wchar_t>(_Meta_cr),
         static_cast<wchar_t>(_Meta_nl), static_cast<wchar_t>(_Meta_ls), static_cast<wchar_t>(_Meta_ps)};
-    constexpr unsigned int _Max_recursion_depth          = 50U;
     const _Node_base* _Nx                                = _Node_arg ? _Node_arg : _Start;
 
     while (_First != _Last && _Nx) { // check current node
         switch (_Nx->_Kind) { // handle current node's type
-        case _N_nop:
-            break;
-
         case _N_bol: // check for beginning anchor
             if (_Sflags & regex_constants::multiline) {
-                // multiline mode: check for embedded line terminator
-                // return iterator to character just after the newline; for input like "\nabc"
-                // matching "^abc", _First could be pointing at 'a', so we need to check --_First for '\n'
-                if (!_STD _Is_ecmascript_line_terminator(*_STD _Prev_iter(_First))) {
-                    if constexpr (sizeof(_Elem) == 1) {
-                        _First =
-                            _STD find_first_of(_First, _Last, _Line_terminators_char, _STD end(_Line_terminators_char));
-                    } else {
-                        _First = _STD find_first_of(
-                            _First, _Last, _Line_terminators_wchar_t, _STD end(_Line_terminators_wchar_t));
-                    }
+                return _STD make_pair(_Nx, _STD _Skip_bol_multiline<_Elem>(_First, _Last));
+            } else {
+                // non-multiline mode: never matches because --_First is valid
+                return _STD make_pair(_Nx, _Last);
+            }
 
-                    if (_First != _Last) {
-                        ++_First;
-                    }
+        case _N_eol:
+            if (_Sflags & regex_constants::multiline) {
+                return _STD make_pair(_Nx, _STD _Skip_eol_multiline<_Elem>(_First, _Last));
+            } else {
+                return _STD make_pair(_Nx, _Last); // non-multiline mode: matches at end of input or not at all
+            }
+
+        case _N_str:
+            return _STD make_pair(_Nx, _Skip_str(_First, _Last, static_cast<const _Node_str<_Elem>*>(_Nx)));
+
+        case _N_class:
+            return _STD make_pair(
+                _Nx, _Skip_class(_First, _Last, static_cast<const _Node_class<_Elem, _RxTraits>*>(_Nx)));
+
+        case _N_if:
+            {
+                // GH-5452: If this node has two or more branches,
+                // examining all these branches has quadratic worst-case complexity.
+                // Thus, we only continue if this node has a single branch only.
+                // TRANSITION, ABI: After GH-5539, the parser no longer generates single-branch _N_if nodes.
+                // But we have to retain this special handling to avoid performance regression
+                // when an old parser gets mixed with a new matcher.
+                const auto _Node = static_cast<const _Node_if*>(_Nx);
+
+                if (_Node->_Child) {
+                    return _STD make_pair<const _Node_base*>(nullptr, _First);
+                }
+                break;
+            }
+
+        case _N_rep:
+            {
+                const auto _Node = static_cast<const _Node_rep*>(_Nx);
+                if (_Node->_Min == 0) {
+                    return _STD make_pair<const _Node_base*>(nullptr, _First);
+                }
+                break;
+            }
+
+        case _N_assert:
+            {
+                if (_Recursion_depth >= _Rx_skip_max_recursion_depth) {
+                    return _STD make_pair<const _Node_base*>(nullptr, _First);
                 }
 
-                return _First;
+                const auto _Node          = static_cast<const _Node_assert*>(_Nx);
+                auto _Initial_assert_skip = _Initial_skip(_First, _Last, _Node->_Child, _Recursion_depth + 1U);
+                if (!_Initial_assert_skip.first) { // continue search on next node outside assertion body only
+                    break;
+                }
+
+                _First                  = _Initial_assert_skip.second;
+                auto _Initial_next_skip = _Initial_skip(_First, _Last, _Node->_Next, _Recursion_depth + 1U);
+
+                if (!_Initial_next_skip.first) { // best possible skip follows from assertion body only
+                    return _STD make_pair(_Initial_assert_skip.first, _First);
+                }
+
+                auto _Next = _Initial_next_skip.second;
+                for (; _Next != _First;) {
+                    _First = _Followup_skip(_Next, _Last, _Node->_Child, _Recursion_depth + 1U);
+                    if (_Next == _First) {
+                        break;
+                    }
+
+                    _Next = _Followup_skip(_First, _Last, _Node->_Next, _Recursion_depth + 1U);
+                }
+
+                return _STD make_pair(_Nx, _First);
+            }
+
+        case _N_neg_assert:
+            // we skip the negated assertion body and continue examining the rest of the regex
+            break;
+
+        case _N_wbound:
+            return _STD make_pair(_Nx, _STD _Skip_wbound(_First, _Last, (_Nx->_Flags & _Fl_negate) != 0));
+
+        case _N_nop:
+        case _N_begin:
+        case _N_endif:
+        case _N_group:
+        case _N_end_group:
+        case _N_capture:
+        case _N_end_capture:
+            break;
+
+        case _N_end:
+        case _N_end_assert:
+        case _N_none:
+        case _N_dot:
+        case _N_back:
+        case _N_end_rep:
+        default:
+            return _STD make_pair<const _Node_base*>(nullptr, _First);
+        }
+        if (_Nx) {
+            _Nx = _Nx->_Next;
+        }
+    }
+    return _STD make_pair<const _Node_base*>(nullptr, _First);
+}
+
+template <class _Elem, class _RxTraits, class _It, class _Alloc>
+_It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Followup_skip(
+    _It _First, _It _Last, const _Node_base* _Nx, unsigned int _Recursion_depth) {
+    // skip until possible match
+    // assumes --_First is valid
+    while (_First != _Last && _Nx) { // check current node
+        switch (_Nx->_Kind) { // handle current node's type
+        case _N_bol: // check for beginning anchor
+            if (_Sflags & regex_constants::multiline) {
+                return _STD _Skip_bol_multiline<_Elem>(_First, _Last);
             } else {
                 // non-multiline mode: never matches because --_First is valid
                 return _Last;
@@ -4904,51 +5087,16 @@ _It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Skip(
 
         case _N_eol:
             if (_Sflags & regex_constants::multiline) {
-                // multiline mode: matches at next line terminator or end of input
-                if constexpr (sizeof(_Elem) == 1) {
-                    return _STD find_first_of(_First, _Last, _Line_terminators_char, _STD end(_Line_terminators_char));
-                } else {
-                    return _STD find_first_of(
-                        _First, _Last, _Line_terminators_wchar_t, _STD end(_Line_terminators_wchar_t));
-                }
+                return _STD _Skip_eol_multiline<_Elem>(_First, _Last);
             } else {
                 return _Last; // non-multiline mode: matches at end of input or not at all
             }
 
         case _N_str:
-            { // check for string match
-                const auto _Node = static_cast<const _Node_str<_Elem>*>(_Nx);
-                const auto _Str  = _Node->_Data._Str();
-                return _STD _Search_translate_left(_First, _Last, _Str, _Str + _Node->_Data._Size(), _Traits, _Sflags);
-            }
+            return _Skip_str(_First, _Last, static_cast<const _Node_str<_Elem>*>(_Nx));
 
         case _N_class:
-            { // check for string match
-                const auto _Node = static_cast<const _Node_class<_Elem, _RxTraits>*>(_Nx);
-
-                for (; _First != _Last; ++_First) { // look for starting match
-                    if (_Do_class(_Node, _First) != _First) {
-                        return _First;
-                    }
-                }
-            }
-            return _First;
-
-        case _N_group:
-            break;
-
-        case _N_end_group:
-            break;
-
-        case _N_end_assert:
-            _Nx = nullptr;
-            break;
-
-        case _N_capture:
-            break;
-
-        case _N_end_capture:
-            break;
+            return _Skip_class(_First, _Last, static_cast<const _Node_class<_Elem, _RxTraits>*>(_Nx));
 
         case _N_if:
             {
@@ -4977,24 +5125,34 @@ _It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Skip(
 
         case _N_assert:
             {
-                if (_Recursion_depth >= _Max_recursion_depth) {
+                if (_Recursion_depth >= _Rx_skip_max_recursion_depth) {
                     return _First;
                 }
 
-                const auto _Node = static_cast<const _Node_assert*>(_Nx);
-                _First           = _Skip(_First, _Last, _Node->_Child, _Recursion_depth + 1U);
-                _It _Next;
-                for (;;) {
-                    _Next = _Skip(_First, _Last, _Node->_Next, _Recursion_depth + 1U);
+                const auto _Node          = static_cast<const _Node_assert*>(_Nx);
+                auto _Initial_assert_skip = _Initial_skip(_First, _Last, _Node->_Child, _Recursion_depth + 1U);
+                if (!_Initial_assert_skip.first) { // continue search on next node outside assertion body only
+                    break;
+                }
+
+                _First                  = _Initial_assert_skip.second;
+                auto _Initial_next_skip = _Initial_skip(_First, _Last, _Node->_Next, _Recursion_depth + 1U);
+
+                if (!_Initial_next_skip.first) { // best possible skip follows from assertion body only
+                    return _First;
+                }
+
+                _It _Next = _Initial_next_skip.second;
+                for (; _Next != _First;) {
+                    _First = _Followup_skip(_Next, _Last, _Node->_Child, _Recursion_depth + 1U);
                     if (_Next == _First) {
                         return _First;
                     }
 
-                    _First = _Skip(_Next, _Last, _Node->_Child, _Recursion_depth + 1U);
-                    if (_Next == _First) {
-                        return _First;
-                    }
+                    _Next = _Followup_skip(_First, _Last, _Node->_Next, _Recursion_depth + 1U);
                 }
+
+                return _First;
             }
 
         case _N_neg_assert:
@@ -5002,24 +5160,19 @@ _It _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Skip(
             break;
 
         case _N_wbound:
-            {
-                const bool _Negated = (_Nx->_Flags & _Fl_negate) != 0;
-                bool _Prev_word     = _STD _Is_word(*_STD _Prev_iter(_First));
-                for (; _First != _Last; ++_First) {
-                    const bool _Next_word = _STD _Is_word(*_First);
-                    if (_Negated == (_Next_word == _Prev_word)) {
-                        break;
-                    }
-                    _Prev_word = _Next_word;
-                }
-                return _First;
-            }
+            return _STD _Skip_wbound(_First, _Last, (_Nx->_Flags & _Fl_negate) != 0);
 
+        case _N_nop:
         case _N_begin:
         case _N_endif:
+        case _N_group:
+        case _N_end_group:
+        case _N_capture:
+        case _N_end_capture:
             break;
 
         case _N_end:
+        case _N_end_assert:
         case _N_none:
         case _N_dot:
         case _N_back:
