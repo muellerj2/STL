@@ -4464,7 +4464,58 @@ bool _Matcher3<_BidIt, _Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _N
                     bool _Greedy = (_Node->_Flags & _Fl_greedy) != 0;
                     auto& _Sav   = _Loop_vals[_Node->_Loop_number];
 
-                    if (_Node->_Simple_loop == 1) {
+                    // optimize for loops on a character sequence
+                    if (_Greedy && _Next->_Next == _Node->_End_rep && _Next->_Kind == _N_str && _Node->_Max != 0) {
+                        auto _Nstr = static_cast<_Node_str<_Elem>*>(_Next);
+                        _It _Res0;
+                        auto _Str_first   = _Nstr->_Data._Str();
+                        auto _Size        = _Nstr->_Data._Size();
+                        auto _Str_last    = _Str_first + _Size;
+                        _Sav._Loop_length = static_cast<ptrdiff_t>(_Size);
+
+                        _Iter_diff_t<_It> _Count{};
+                        int _Loop_idx = 0;
+                        if ((_Res0 = _STD _Compare_translate_left(
+                                 _Tgt_state._Cur, _End, _Str_first, _Str_last, _Traits, _Sflags, _Count))
+                            != _Tgt_state._Cur) {
+                            const auto _Code = _Node->_Min == 0 ? _Rx_unwind_ops::_Loop_simple_greedy_firstrep
+                                                                : _Rx_unwind_ops::_Do_nothing;
+                            auto _Frame_idx  = _Push_frame(_Code, _Node);
+                            auto& _Frame     = _Frames[_Frame_idx];
+                            _Tgt_state._Cur  = _Res0;
+                            _Loop_idx        = 1;
+
+                            while (_Loop_idx != _Node->_Max
+                                   && (_Res0 = _STD _Compare_translate_left(
+                                           _Tgt_state._Cur, _End, _Str_first, _Str_last, _Traits, _Sflags, _Count))
+                                          != _Tgt_state._Cur) {
+                                _Tgt_state._Cur = _Res0;
+                                if (_Loop_idx < INT_MAX) {
+                                    if (++_Loop_idx == _Node->_Min) {
+                                        _Frame._Pos = _Res0;
+                                        _STD advance(_Frame._Pos, -_Sav._Loop_length);
+                                    }
+                                }
+                            }
+
+                            if (_Loop_idx >= _Node->_Min) {
+                                auto _Before_unwind_pos = _Tgt_state._Cur;
+                                _STD advance(_Before_unwind_pos, -_Sav._Loop_length);
+                                if (_Before_unwind_pos != _Frame._Pos) {
+                                    auto _Second_frame_idx =
+                                        _Push_frame(_Rx_unwind_ops::_Loop_simple_greedy_lastrep, _Node);
+                                    auto& _Second_frame               = _Frames[_Second_frame_idx];
+                                    _Second_frame._Loop_frame_idx_sav = _Frame_idx;
+                                    _Second_frame._Pos                = _Before_unwind_pos;
+                                }
+                            }
+                        }
+                        _Next   = _Node->_End_rep->_Next;
+                        _Failed = _Node->_Min > _Loop_idx;
+
+                        // divide by 64 because optimization for special cases is cheaper than state transitions
+                        _Increase_complexity_count(_Count / 64);
+                    } else if (_Node->_Simple_loop == 1) {
                         _Sav._Loop_frame_idx = _Push_frame(_Rx_unwind_ops::_Do_nothing, _Node);
                         if (_Node->_Min > 0 || (_Greedy && !_Longest && _Node->_Max != 0)) { // try a rep first
                             _Sav._Loop_idx = 1;
