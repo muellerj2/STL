@@ -63,6 +63,8 @@ BENCHMARK_CAPTURE(bm_match_sequence_of_as, "(a)(?:b|a)*c", "(a)(?:b|a)*c")->Appl
 BENCHMARK_CAPTURE(bm_match_sequence_of_as, ".*" ecma, ".*")->Apply(large_args);
 BENCHMARK_CAPTURE(bm_match_sequence_of_as, ".*" posix any, ".*", extended, match_any)->Apply(large_args);
 BENCHMARK_CAPTURE(bm_match_sequence_of_as, ".*" posix longest, ".*", extended)->Apply(common_args);
+BENCHMARK_CAPTURE(bm_match_sequence_of_as, "[^]*", "[^]*")->Apply(large_args);
+BENCHMARK_CAPTURE(bm_match_sequence_of_as, "[ab]*", "[ab]*")->Apply(large_args);
 BENCHMARK_CAPTURE(bm_match_sequence_of_9a1b, "(?:a*b)*", "(?:a*b)*")->Apply(common_args);
 
 BENCHMARK_MAIN();

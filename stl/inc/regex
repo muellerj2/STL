@@ -1269,24 +1269,30 @@ _INLINE_VAR constexpr unsigned int _Bmp_size  = (_Bmp_max + _Bmp_chrs - 1U) / _B
 _INLINE_VAR constexpr unsigned int _ARRAY_THRESHOLD = 4U;
 
 enum _Node_flags : int { // flags for nfa nodes with special properties
-    _Fl_none              = 0x00000,
-    _Fl_negate            = 0x00001,
-    _Fl_greedy            = 0x00002,
-    _Fl_longest           = 0x00008, // TRANSITION, ABI: 0x004 is unused; the parser previously marked nodes with it
-    _Fl_class_negated_w   = 0x00100,
-    _Fl_class_negated_s   = 0x00200,
-    _Fl_class_negated_d   = 0x00400,
-    _Fl_class_cl_all_bits = 0x00800, // TRANSITION, ABI: GH-5242
-    _Fl_begin_needs_w     = 0x00100,
-    _Fl_begin_needs_s     = 0x00200,
-    _Fl_begin_needs_d     = 0x00400,
-    _Fl_rep_branchless    = 0x01000,
-    _Fl_rep_str           = 0x02000, // 1 << 13
-    _Fl_rep_char          = 0x04000, // 2 << 13
-    _Fl_rep_dot_ecma      = 0x06000, // 3 << 13
-    _Fl_rep_dot_posix     = 0x08000, // 4 << 13
-    // values 5 << 13 through 15 << 13 inclusive are reserved for new special cases to optimize
-    _Fl_rep_known_subtype = 0x08000, // 4 << 13, increase to be equal to the newest special case
+    _Fl_none                  = 0x00000,
+    _Fl_negate                = 0x00001,
+    _Fl_greedy                = 0x00002,
+    _Fl_longest               = 0x00008, // TRANSITION, ABI: 0x004 is unused; the parser previously marked nodes with it
+    _Fl_class_negated_w       = 0x00100,
+    _Fl_class_negated_s       = 0x00200,
+    _Fl_class_negated_d       = 0x00400,
+    _Fl_class_cl_all_bits     = 0x00800, // TRANSITION, ABI: GH-5242
+    _Fl_begin_needs_w         = 0x00100,
+    _Fl_begin_needs_s         = 0x00200,
+    _Fl_begin_needs_d         = 0x00400,
+    _Fl_rep_branchless        = 0x01000,
+    _Fl_rep_str               = 0x02000, // 1 << 13
+    _Fl_rep_char              = 0x04000, // 2 << 13
+    _Fl_rep_dot_ecma          = 0x06000, // 3 << 13
+    _Fl_rep_dot_posix         = 0x08000, // 4 << 13
+    _Fl_rep_class_neg_empty   = 0x0A000, // 5 << 13
+    _Fl_rep_class_map         = 0x0C000, // 6 << 13
+    _Fl_rep_class_map_icase   = 0x0E000, // 7 << 13
+    _Fl_rep_class_map_collate = 0x10000, // 8 << 13
+    _Fl_rep_class_ctype       = 0x12000, // 9 << 13
+    _Fl_rep_class_complex     = 0x14000, // 10 << 13
+    // values 10 << 13 through 15 << 13 inclusive are reserved for new special cases to optimize
+    _Fl_rep_known_subtype = 0x12000, // 9 << 13, increase to be equal to the newest special case
     _Fl_rep_subtype_mask  = 0x1E000, // 15 << 13, don't change
 };
 
@@ -4278,6 +4284,35 @@ _FwdIt _Find_next_ecmascript_line_terminator(_FwdIt _First, _FwdIt _Last) {
     }
 }
 
+template <regex_constants::syntax_option_type _Option, class _FwdIt, class _RxTraits>
+_FwdIt _Find_first_not_in_bitmap(_FwdIt _First, _FwdIt _Last, _Bitmap* _Map, const _RxTraits& _Traits, bool _Negated) {
+
+    for (; _First != _Last; ++_First) {
+        typename _RxTraits::char_type _Ch = *_First;
+        if constexpr (_Option == regex_constants::icase) {
+            _Ch = _Traits.translate_nocase(_Ch);
+        } else if constexpr (_Option == regex_constants::collate) {
+            _Ch = _Traits.translate(_Ch);
+        }
+
+        const auto _Uchar = static_cast<unsigned char>(_Ch);
+
+        bool _Included;
+        if constexpr (sizeof(_Ch) == 1) {
+            _Included = _Map->_Find(_Uchar);
+        } else {
+            _Included = static_cast<typename _RxTraits::char_type>(_Uchar) == _Ch && _Map->_Find(_Uchar);
+        }
+
+        if (_Included == _Negated) {
+            break;
+        }
+    }
+
+    return _First;
+}
+
+
 template <class _Elem, class _RxTraits, class _It, class _Alloc>
 bool _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // check for match
     bool _Failed = false;
@@ -4566,6 +4601,63 @@ bool _Matcher3<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                             case _Fl_rep_dot_posix:
                                 _Cur = _STD _Find_unchecked(_Cur, _Last, _Elem{});
                                 break;
+                            case _Fl_rep_class_neg_empty:
+                                _Cur = _Last;
+                                break;
+                            case _Fl_rep_class_map_collate:
+                                if constexpr (!_Is_any_of_v<_RxTraits, regex_traits<char>, regex_traits<wchar_t>>) {
+                                    _Cur = _STD _Find_first_not_in_bitmap<regex_constants::collate>(_Cur, _Last,
+                                        static_cast<const _Node_class<_Elem, _RxTraits>*>(_Next)->_Small, _Traits,
+                                        (_Next->_Flags & _Fl_negate) != 0);
+                                    break;
+                                }
+                                _FALLTHROUGH;
+                            case _Fl_rep_class_map:
+                                {
+                                    _Cur = _STD _Find_first_not_in_bitmap<regex_constants::syntax_option_type{}>(_Cur,
+                                        _Last, static_cast<const _Node_class<_Elem, _RxTraits>*>(_Next)->_Small,
+                                        _Traits, (_Next->_Flags & _Fl_negate) != 0);
+                                }
+                                break;
+                            case _Fl_rep_class_map_icase:
+                                {
+                                    _Cur = _STD _Find_first_not_in_bitmap<regex_constants::icase>(_Cur, _Last,
+                                        static_cast<const _Node_class<_Elem, _RxTraits>*>(_Next)->_Small, _Traits,
+                                        (_Next->_Flags & _Fl_negate) != 0);
+                                }
+                                break;
+                            case _Fl_rep_class_complex:
+                                {
+                                    _It _Res;
+                                    while ((_Res = _Do_class(_Next, _Cur)) != _Cur) {
+                                        _Cur = _Res;
+                                    }
+                                }
+                            case _Fl_rep_class_ctype:
+                                if constexpr (sizeof(_Elem) > 1U) {
+                                    const auto _Nclass  = static_cast<const _Node_class<_Elem, _RxTraits>*>(_Next);
+                                    const auto _Bitmap  = _Nclass->_Small;
+                                    const auto _Classes = _Nclass->_Classes;
+                                    const bool _Negated = (_Nclass->_Flags & _Fl_negate) != 0;
+                                    for (; _Cur != _Last; ++_Cur) {
+                                        _Elem _Ch = *_Cur;
+
+                                        if (_Sflags & regex_constants::icase) {
+                                            _Ch = _Traits.translate_nocase(_Ch);
+                                        } else if (_Sflags & regex_constants::collate) {
+                                            _Ch = _Traits.translate(_Ch);
+                                        }
+                                        const auto _Uchar    = static_cast<unsigned char>(_Ch);
+                                        const auto _Included = static_cast<_Elem>(_Uchar) == _Ch
+                                                                 ? _Bitmap->_Find(_Uchar)
+                                                                 : _Traits.isctype(_Ch, _Classes);
+                                        if (_Included == _Negated) {
+                                            break;
+                                        }
+                                    }
+                                    break;
+                                }
+                                _FALLTHROUGH;
                             default:
                                 _Xregex_error(regex_constants::error_complexity); // this should not happen
                             }
@@ -6167,7 +6259,8 @@ void _Parser3<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                 }
 
                 const auto _First_inner = _Outer_rep->_Next;
-                if (_First_inner->_Next == _Nx && _Outer_rep->_Max != 0) {
+                if (_First_inner->_Next == _Nx && _Outer_rep->_Max != 0
+                    && (_Outer_rep->_Flags & _Fl_rep_branchless) != 0) {
                     switch (_Outer_rep->_Next->_Kind) {
                     case _N_str:
                         if (static_cast<const _Node_str<_Elem>*>(_First_inner)->_Data._Size() == 1U) {
@@ -6182,10 +6275,66 @@ void _Parser3<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                             (this->_Flags & regex_constants::_Any_posix) != 0 ? _Fl_rep_dot_posix : _Fl_rep_dot_ecma;
                         break;
 
+                    case _N_class:
+                        {
+                            const auto _Node      = static_cast<const _Node_class<_Elem, _RxTraits>*>(_First_inner);
+                            const bool _Icase     = (_Flags & regex_constants::icase) != 0;
+                            const bool _Collate   = (_Flags & regex_constants::collate) != 0;
+                            const bool _Has_ctype = _Node->_Classes != typename _RxTraits::char_class_type{};
+                            const bool _Has_ctype_flag = (_Node->_Flags
+                                                             & (_Fl_class_negated_w | _Fl_class_negated_s
+                                                                 | _Fl_class_negated_d | _Fl_class_cl_all_bits))
+                                                      != 0;
+                            const bool _Has_large      = _Node->_Large != nullptr;
+                            const bool _Has_small      = _Node->_Small != nullptr;
+                            const bool _Has_coll       = _Node->_Coll != nullptr;
+                            const bool _Has_ranges     = _Node->_Ranges != nullptr;
+
+                            const int _Bitset = _Icase | (_Collate << 1) | (_Has_small << 2) | (_Has_ctype << 3)
+                                              | (_Has_ctype_flag << 4) | | (_Has_large << 5) | (_Has_coll << 6)
+                                              | (_Has_ranges << 7);
+
+                            switch (_Bitset) {
+                            case 4: // Small
+                                _Outer_rep->_Flags |= _Fl_rep_class_map;
+                                break;
+                            case 5: // Icase Small
+                            case 7: // Icase Collate Small
+                                _Outer_rep->_Flags |= _Fl_rep_class_map_icase;
+                                break;
+                            case 6: // Collate Small
+                                _Outer_rep->_Flags |= _Fl_rep_class_map_collate;
+                                break;
+                            case 12: // Small Ctype
+                                _Outer_rep->_Flags |= _Fl_rep_class_ctype;
+                                break;
+                            case (1 << 6): // Coll
+                            case (1 << 6) | 1: // Icase Coll
+                            case (1 << 6) | 2: // Collate Coll
+                            case (1 << 6) | 3: // Icase Collate Coll
+                                // A collated element matches at least two characters.
+                                // Since the surrounding loop is characterized as branchless,
+                                // it can't match a single character, so the bits for
+                                // small, ctype, ctype flag, large, or ranges must be unset
+                                break;
+                            case 0: // Empty
+                            case 1: // Icase Empty
+                            case 2: // Collate Empty
+                            case 3: // Icase Collate Empty
+                                if ((_Node->_Flags & _Fl_negate) != 0) {
+                                    _Outer_rep->_Flags |= _Fl_rep_class_neg_empty;
+                                    break;
+                                }
+                                _FALLTHROUGH;
+                            default:
+                                _Outer_rep->_Flags |= _Fl_rep_class_complex;
+                                break;
+                            }
+                        }
+                        break;
                     case _N_nop:
                     case _N_bol:
                     case _N_eol:
-                    case _N_class:
                     case _N_group:
                     case _N_end_group:
                     case _N_end_assert:
