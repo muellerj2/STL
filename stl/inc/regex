@@ -2285,8 +2285,9 @@ private:
     _Node_base* _Group_start{};
     _FwdIt _Pat;
     _FwdIt _End;
-    unsigned int _Grp_idx = 0;
-    int _Disj_count       = 0;
+    unsigned int _Grp_idx     = 0;
+    unsigned int _Min_backref = 0U;
+    int _Disj_count           = 0;
     vector<bool> _Finished_grps;
     _Builder3<_FwdIt, _Elem, _RxTraits> _Nfa;
     const _RxTraits& _Traits;
@@ -6149,7 +6150,12 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_AtomEscape() { // check for valid atom
                        || !_Finished_grps[static_cast<size_t>(_Val)]) {
                 _Error(regex_constants::error_backref);
             } else {
-                _Nfa._Add_backreference(static_cast<size_t>(_Val));
+                const auto _Backref_idx = static_cast<unsigned int>(_Val);
+                if (_Min_backref > _Backref_idx || _Min_backref == 0U) {
+                    _Min_backref = _Backref_idx;
+                }
+
+                _Nfa._Add_backreference(_Backref_idx);
             }
         }
     } else if (_CharacterEscape(false)) {
