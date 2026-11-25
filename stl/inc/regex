@@ -1339,6 +1339,7 @@ enum _Node_flags : int { // flags for nfa nodes with special properties
     // values 15 << 13 through 31 << 13 inclusive are reserved for new special cases to optimize
     _Fl_rep_known_subtype = 0x1C000, // 14 << 13, increase to be equal to the newest special case
     _Fl_rep_subtype_mask  = 0x3E000, // 31 << 13, don't change
+    _Fl_rep_leading       = 0x40000,
 };
 
 _BITMASK_OPS(_EMPTY_ARGUMENT, _Node_flags)
@@ -2280,7 +2281,8 @@ private:
     void _Quantifier();
     void _Alternative();
     void _Disjunction();
-    void _Calculate_loop_simplicity(_Node_base* _Nx, _Node_base* _Ne, _Node_rep* _Outer_rep, bool _Nonreentrant);
+    void _Calculate_loop_simplicity(
+        _Node_base* _Nx, _Node_base* _Ne, _Node_rep* _Outer_rep, bool _Nonreentrant, bool _Leading);
 
     _Node_base* _Group_start{};
     _FwdIt _Pat;
@@ -6302,7 +6304,7 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Disjunction() { // check for valid dis
 
 template <class _FwdIt, class _Elem, class _RxTraits>
 void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
-    _Node_base* _Nx, _Node_base* _Ne, _Node_rep* _Outer_rep, const bool _Nonreentrant) {
+    _Node_base* _Nx, _Node_base* _Ne, _Node_rep* _Outer_rep, const bool _Nonreentrant, bool _Leading) {
     // walks regex NFA, calculates values of _Node_rep::_Simple_loop
     for (; _Nx != _Ne && _Nx; _Nx = _Nx->_Next) {
         switch (_Nx->_Kind) {
@@ -6313,9 +6315,12 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                 _Outer_rep->_Flags &= ~_Fl_rep_branchless;
             }
 
+            // a branch makes a rep non-leading
+            _Leading = false;
+
             // visit each branch of the if
             for (_Node_if* _Branch = static_cast<_Node_if*>(_Nx)->_Child; _Branch; _Branch = _Branch->_Child) {
-                _Calculate_loop_simplicity(_Branch->_Next, _Branch->_Endif, _Outer_rep, _Nonreentrant);
+                _Calculate_loop_simplicity(_Branch->_Next, _Branch->_Endif, _Outer_rep, _Nonreentrant, false);
             }
             break;
 
@@ -6325,12 +6330,19 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                 _Outer_rep->_Simple_loop = 0;
                 _Outer_rep->_Flags &= ~_Fl_rep_branchless;
             }
+
+            // an assert makes a rep non-leading
+            _Leading = false;
+
             [[fallthrough]];
 
         case _N_neg_assert:
+            // an assert makes a rep non-leading
+            _Leading = false;
+
             // visit the assertion body
             // note _Outer_rep being reset: the assertion regex is completely independent
-            _Calculate_loop_simplicity(static_cast<_Node_assert*>(_Nx)->_Child, nullptr, nullptr, true);
+            _Calculate_loop_simplicity(static_cast<_Node_assert*>(_Nx)->_Child, nullptr, nullptr, true, false);
             break;
 
         case _N_rep:
@@ -6348,11 +6360,16 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                 }
 
                 _Calculate_loop_simplicity(
-                    _Inner_rep->_Next, _Inner_rep->_End_rep->_Next, _Inner_rep, _Inner_nonreentrant);
+                    _Inner_rep->_Next, _Inner_rep->_End_rep->_Next, _Inner_rep, _Inner_nonreentrant, false);
                 _Nx = _Inner_rep->_End_rep;
             } else {
                 _Outer_rep = static_cast<_Node_rep*>(_Nx);
                 _Outer_rep->_Flags |= _Fl_rep_branchless;
+
+                if (_Leading) {
+                    _Outer_rep->_Flags |= _Fl_rep_leading;
+                    _Leading = false;
+                }
             }
             break;
 
@@ -6438,13 +6455,13 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                         }
                         break;
 
+                    case _N_capture:
                     case _N_nop:
                     case _N_bol:
                     case _N_eol:
                     case _N_group:
                     case _N_end_group:
                     case _N_end_assert:
-                    case _N_capture:
                     case _N_end_capture:
                     case _N_if:
                     case _N_rep:
@@ -6479,6 +6496,11 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                     _Outer_rep->_Flags &= ~_Fl_rep_branchless;
                 }
             }
+
+            // a character class referenced makes a rep non-leading
+            _Leading = false;
+            break;
+
             break;
 
         case _N_back:
@@ -6487,17 +6509,34 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
                 // when a loop is reentered
                 _Outer_rep->_Flags &= ~_Fl_rep_branchless;
             }
+
+            // a back-reference makes a rep non-leading
+            _Leading = false;
+            break;
+
+        case _N_capture:
+            // a capture referenced in a back-reference makes a rep non-leading
+            if (_Min_backref != 0U && static_cast<const _Node_capture*>(_Nx)->_Idx >= _Min_backref) {
+                _Leading = false;
+            }
+            break;
+
+        case _N_dot:
+            // a dot makes a rep non-leading
+            _Leading = false;
+            break;
+
+        case _N_str:
+            // a string makes a rep non-leading
+            _Leading = false;
             break;
 
         case _N_group:
-        case _N_capture:
         case _N_none:
         case _N_nop:
         case _N_bol:
         case _N_eol:
         case _N_wbound:
-        case _N_dot:
-        case _N_str:
         case _N_end_group:
         case _N_end_assert:
         case _N_end_capture:
@@ -6522,7 +6561,7 @@ _Root_node* _Parser4<_FwdIt, _Elem, _RxTraits>::_Compile() { // compile regular 
     _Res         = _Nfa._End_pattern();
     _Res->_Fl    = _Flags;
     _Res->_Marks = _Mark_count();
-    _Calculate_loop_simplicity(_Res, nullptr, nullptr, true);
+    _Calculate_loop_simplicity(_Res, nullptr, nullptr, true, true);
     _Guard._Target = nullptr;
     return _Res;
 }
