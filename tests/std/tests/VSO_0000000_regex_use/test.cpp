@@ -2900,6 +2900,139 @@ void test_gh_6423() {
     }
 }
 
+void test_gh_6452() {
+    {
+        const string line = "Router Stats: total_nets_routed: 113175 "
+                            "total_connections_routed: 437370 "
+                            "total_WOOF_pushes: 313639277 "
+                            "total_heap_pops: 35866777 "
+                            "total_internal_heap_pushes: 0 "
+                            "total_internal_heap_pops: 0 "
+                            "total_external_heap_pushes: 313639277 "
+                            "total_external_heap_pops: 35866777 "
+                            "total_external_SOURCE_pushes: 379297 "
+                            "total_external_SOURCE_pops: 379297 "
+                            "total_internal_SOURCE_pushes: 0 "
+                            "total_internal_SOURCE_pops: 0 "
+                            "rt_node_SOURCE_pushes: 379297 "
+                            "rt_node_SOURCE_high_fanout_pushes: 3797 "
+                            "rt_node_SOURCE_entire_tree_pushes: 375500 "
+                            "total_external_SINK_pushes: 3488243 "
+                            "total_external_SINK_pops: 3260194 "
+                            "total_internal_SINK_pushes: 0 "
+                            "total_internal_SINK_pops: 0 "
+                            "rt_node_SINK_pushes: 0 "
+                            "rt_node_SINK_high_fanout_pushes: 0 "
+                            "rt_node_SINK_entire_tree_pushes: 0 "
+                            "total_external_IPIN_pushes: 5501600 "
+                            "total_external_IPIN_pops: 3585046 "
+                            "total_internal_IPIN_pushes: 0 "
+                            "total_internal_IPIN_pops: 0 "
+                            "rt_node_IPIN_pushes: 0 "
+                            "rt_node_IPIN_high_fanout_pushes: 0 "
+                            "rt_node_IPIN_entire_tree_pushes: 0 "
+                            "total_external_OPIN_pushes: 14718566 "
+                            "total_external_OPIN_pops: 8542877 "
+                            "total_internal_OPIN_pushes: 0 "
+                            "total_internal_OPIN_pops: 0 "
+                            "rt_node_OPIN_pushes: 342094 "
+                            "rt_node_OPIN_high_fanout_pushes: 8165 "
+                            "rt_node_OPIN_entire_tree_pushes: 333929 "
+                            "total_external_CHANX_pushes: 143852606 "
+                            "total_external_CHANX_pops: 10396956 "
+                            "total_internal_CHANX_pushes: 0 "
+                            "total_internal_CHANX_pops: 0 "
+                            "rt_node_CHANX_pushes: 2213020 "
+                            "rt_node_CHANX_high_fanout_pushes: 482509 "
+                            "rt_node_CHANX_entire_tree_pushes: 1730511 "
+                            "total_external_CHANY_pushes: 145698965 "
+                            "total_external_CHANY_pops: 9702407 "
+                            "total_internal_CHANY_pushes: 0 "
+                            "total_internal_CHANY_pops: 0 "
+                            "rt_node_CHANY_pushes: 2442282 "
+                            "rt_node_CHANY_high_fanout_pushes: 589528 "
+                            "rt_node_CHANY_entire_tree_pushes: 1852754 "
+                            "total_number_of_adding_all_rt: 8814821 "
+                            "total_number_of_adding_high_fanout_rt: 62167 "
+                            "total_number_of_adding_all_rt_from_calling_high_fanout_rt: 41981 ";
+
+        for (const string pattern : {R"(.*total_heap_pushes\s*:\s*(\d+) .*)", R"(.*?total_heap_pushes\s*:\s*(\d+) .*)",
+                 R"(((?!<).)*total_heap_pushes\s*:\s*(\d+) .*)", R"(((?!<).)*?total_heap_pushes\s*:\s*(\d+) .*)"}) {
+            test_regex re(&g_regexTester, pattern);
+            re.should_search_fail(line);
+        }
+    }
+
+    {
+        const string input(100000, 'a');
+        for (const string pattern : {".*b", ".*?b", "((?!c).)*b", "((?!c).)*?b"}) {
+            test_regex re(&g_regexTester, pattern);
+            re.should_search_fail(input);
+        }
+    }
+
+    {
+        const string input    = "aaaaaab";
+        const string expected = "aaaaab";
+        for (const string pattern :
+            {"a{2,5}b", "(?:(?!c)a){2,5}b", "a{2,5}?b", "(?:(?!c)a){2,5}?b", "(?:c*a){2,5}b", "(?:c*a){2,5}?b"}) {
+            test_regex re(&g_regexTester, pattern);
+            re.should_search_match(input, expected);
+        }
+
+        for (const string pattern : {"(a{2,5})b", "(a{2,5}?)b"}) {
+            test_regex re(&g_regexTester, pattern);
+            re.should_search_match_capture_groups(input, expected, match_default, {{1, 6}});
+        }
+
+        for (const string pattern : {"((a){2,5})b", "(((?!c)a){2,5})b", "((a){2,5}?)b", "(((?!c)a){2,5}?)b",
+                 "((c*a){2,5})b", "((c*a){2,5}?)b"}) {
+            test_regex re(&g_regexTester, pattern);
+            re.should_search_match_capture_groups(input, expected, match_default, {{1, 6}, {5, 6}});
+        }
+    }
+
+    {
+        for (const string pattern :
+            {"a{3,5}b", "(?:(?!c)a){3,5}b", "a{3,5}?b", "(?:(?!c)a){3,5}?b", "(?:c*a){3,5}b", "(?:c*a){3,5}?b"}) {
+            test_regex re(&g_regexTester, pattern);
+            re.should_search_match("aabaaaaxaaaaaaxaaaabaaab", "aaaab");
+            re.should_search_match("xaabaaaaxaaaaaaxaaaaaabaaab", "aaaaab");
+        }
+    }
+
+    {
+        test_regex re(&g_regexTester, R"((a*b)\1)");
+        re.should_search_match("aaaaabaaab", "aaabaaab");
+    }
+
+    {
+        test_regex re(&g_regexTester, R"((?=(aaaaaab|aaab))a*b\1)");
+        re.should_search_match("aaaaaaaabaaab", "aaabaaab");
+    }
+
+    {
+        test_regex re(&g_regexTester, "a*b|aaac");
+        re.should_search_match("aaaaac", "aaac");
+    }
+
+    for (const string pattern : {"ca*b", ".a*b", "[cde]a*b"}) {
+        test_regex re(&g_regexTester, pattern);
+        re.should_search_match("caaacaaaab", "caaaab");
+    }
+
+    for (const string pattern :
+        {"(?:aa)*b", "(?:aa)*?b", "(aa)*b", "(aa)*?b", "((?!c)aa)*b", "((?!c)aa)*?b", "(c*aa)*b", "(c*aa)*?b"}) {
+        test_regex re(&g_regexTester, pattern);
+        re.should_search_match("aaaaab", "aaaab");
+    }
+
+    {
+        test_regex re(&g_regexTester, "(?!x)a{2,3}b");
+        re.should_search_match("aaaab", "aaab");
+    }
+}
+
 void test_gh_6464() {
     // GH-6464: Accelerate greedy loops over fixed strings
 
@@ -3444,6 +3577,7 @@ int main() {
     test_gh_6289();
     test_gh_6359();
     test_gh_6423();
+    test_gh_6452();
     test_gh_6464();
     test_gh_6475();
     test_gh_6480();
