@@ -1920,10 +1920,13 @@ enum class _Rx_unwind_ops {
     _After_neg_assert,
     _Disjunction_eval_alternative,
     _Do_nothing,
+    _Loop_simple_update_search_advance,
     _Loop_simple_nongreedy,
+    _Loop_simple_nongreedy_firstrep,
     _Loop_simple_greedy_firstrep,
     _Loop_simple_greedy_intermediaterep,
     _Loop_simple_greedy_lastrep,
+    _Loop_simple_greedy_subtype,
     _Loop_nongreedy,
     _Loop_greedy,
     _Loop_restore_vals,
@@ -2199,6 +2202,7 @@ private:
     const _RxTraits& _Traits;
     _It _Begin;
     _It _End;
+    _It _Search_advance;
     regex_constants::syntax_option_type _Sflags;
     regex_constants::match_flag_type _Mflags;
     unsigned int _Ncap;
@@ -2219,6 +2223,8 @@ private:
     bool _Find_first_inner_capture_group(_Node_base*, _Loop_vals_type*);
     void _Reset_capture_groups(unsigned int _First);
     _It _Do_class(const _Node_base*, _It);
+    void _Setup_next_simple_greedy_backtrack(_State_frame_type& _Frame, const _Loop_vals_type& _Sav);
+
     bool _Match_pat(_Node_base*);
     bool _Better_match();
     bool _Is_wbound() const;
@@ -4313,6 +4319,18 @@ typename _RxTraits::char_class_type _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_L
     return _Traits.lookup_classname(_Ptr, _Ptr + 1, (_Sflags & regex_constants::icase) != 0);
 }
 
+template <class _Elem, class _RxTraits, class _It, class _Alloc>
+void _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Setup_next_simple_greedy_backtrack(
+    _State_frame_type& _Frame, const _Loop_vals_type& _Sav) {
+    _STD advance(_Frame._Pos, -_Sav._Loop_length);
+
+    // set up unwinding if prior rep is not first or minimum rep
+    if (_Frames[_Frame._Loop_frame_idx_sav]._Pos != _Frame._Pos) {
+        _Frame._Code = _Rx_unwind_ops::_Loop_simple_greedy_intermediaterep;
+        ++_Frames_count;
+    }
+}
+
 template <class _Elem>
 bool _Is_ecmascript_line_terminator(_Elem _Ch) {
     if constexpr (is_same_v<_Elem, char>) {
@@ -4765,6 +4783,12 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                                 _Increase_complexity_count(static_cast<_Diff_type>((_Count + _Failed_work_count) / 64));
                             }
 
+                            if ((_Node->_Flags & _Fl_rep_leading) != 0
+                                && _Sav._Loop_length == static_cast<_Diff_type>(1)
+                                && (_Node->_Max == -1 || _Loop_idx < _Node->_Max)) {
+                                _Search_advance = _Cur;
+                            }
+
                             _Next   = _Node->_End_rep->_Next;
                             _Failed = _Node->_Min > _Loop_idx;
                             if (!_Failed && _Loop_idx != 0) {
@@ -4798,7 +4822,7 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
 
                                 if (_Second_frame_required) {
                                     const auto _Second_frame_idx =
-                                        _Push_frame(_Rx_unwind_ops::_Loop_simple_greedy_lastrep, _Node);
+                                        _Push_frame(_Rx_unwind_ops::_Loop_simple_greedy_subtype, _Node);
                                     auto& _Second_frame               = _Frames[_Second_frame_idx];
                                     _Second_frame._Loop_frame_idx_sav = _First_frame_idx;
                                     _Second_frame._Pos                = _Prev;
@@ -4825,7 +4849,7 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
 
                             // set up stack unwinding for non-greedy matching if at least one rep is allowed
                             if (_Node->_Max != 0) {
-                                _Push_frame(_Rx_unwind_ops::_Loop_simple_nongreedy, _Node);
+                                _Push_frame(_Rx_unwind_ops::_Loop_simple_nongreedy_firstrep, _Node);
                             }
                         }
                     } else {
@@ -4881,7 +4905,7 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                             auto _New_frame_code = _Base_frame._Code == _Rx_unwind_ops::_Loop_simple_greedy_firstrep
                                                         || _Base_frame._Code == _Rx_unwind_ops::_Loop_greedy
                                                      ? _Rx_unwind_ops::_Loop_simple_greedy_lastrep
-                                                     : _Rx_unwind_ops::_Do_nothing;
+                                                     : _Rx_unwind_ops::_Loop_simple_update_search_advance;
                             auto _New_frame_idx  = _Push_frame(_New_frame_code, _Nr);
                             _Frames[_New_frame_idx]._Loop_frame_idx_sav = _Sav._Loop_frame_idx;
                             _Sav._Loop_frame_idx                        = _New_frame_idx;
@@ -4894,7 +4918,8 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                             ++_Sav._Loop_idx;
                         } else if (_Greedy && !_Longest) { // greedy matching
                             auto& _Frame = _Frames[_Sav._Loop_frame_idx];
-                            if (_Frame._Code == _Rx_unwind_ops::_Do_nothing) { // min reps reached
+                            if (_Frame._Code
+                                == _Rx_unwind_ops::_Loop_simple_update_search_advance) { // min reps reached
                                 _Frame._Code = _Rx_unwind_ops::_Loop_simple_greedy_lastrep;
                                 // set iterator in base frame to start of prior rep
                                 // (so to start of rep before reaching min reps)
@@ -5052,15 +5077,33 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                 }
 
             case _Rx_unwind_ops::_Loop_simple_nongreedy:
-                { // try one more rep
+                // try one more rep
+                ++_Frames_count;
+                _Frame._Code = _Rx_unwind_ops::_Loop_simple_update_search_advance;
+                [[fallthrough]];
+
+            case _Rx_unwind_ops::_Loop_simple_nongreedy_firstrep:
+                { // try first rep
                     auto _Node = static_cast<_Node_rep*>(_Frame._Node);
                     auto& _Sav = _Loop_vals[_Node->_Loop_number];
 
                     _Nx             = _Node->_Next;
                     _Tgt_state._Cur = _Frame._Pos;
                     _Failed         = false;
+
                     if (_Sav._Loop_idx < INT_MAX) { // avoid overflowing _Loop_idx
                         ++_Sav._Loop_idx;
+                    }
+                }
+                break;
+
+            case _Rx_unwind_ops::_Loop_simple_update_search_advance:
+                { // update search advance for loop
+                    const auto _Node = static_cast<_Node_rep*>(_Frame._Node);
+
+                    if ((_Node->_Flags & _Fl_rep_leading) != 0
+                        && _Loop_vals[_Node->_Loop_number]._Loop_length == static_cast<_Diff_type>(1)) {
+                        _Search_advance = _Frame._Pos;
                     }
                 }
                 break;
@@ -5079,7 +5122,7 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                 {
                     // shift capturing groups, set up unwinding prior rep and try tail
                     // when backtracking between the second and the last attempted rep
-                    auto _Node = static_cast<_Node_rep*>(_Frame._Node);
+                    const auto _Node = static_cast<_Node_rep*>(_Frame._Node);
 
                     // adjust capturing group begin and end iterators by rep length
                     auto& _Sav = _Loop_vals[_Node->_Loop_number];
@@ -5094,27 +5137,41 @@ bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Match_pat(_Node_base* _Nx) { // 
                             _Capture_frame._Code == _Rx_unwind_ops::_Capture_restore_begin ? _Grp._Begin : _Grp._End,
                             -_Sav._Loop_length);
                     }
-                }
-                [[fallthrough]];
 
-            case _Rx_unwind_ops::_Loop_simple_greedy_lastrep:
-                {
                     // set up unwinding prior rep and try tail
                     // when backtracking from last attempted rep
-                    auto _Node = static_cast<_Node_rep*>(_Frame._Node);
 
                     _Nx             = _Node->_End_rep->_Next;
                     _Tgt_state._Cur = _Frame._Pos;
                     _Failed         = false;
 
-                    auto& _Sav = _Loop_vals[_Node->_Loop_number];
-                    _STD advance(_Frame._Pos, -_Sav._Loop_length);
+                    _Setup_next_simple_greedy_backtrack(_Frame, _Sav);
+                };
+                break;
 
-                    // set up unwinding if prior rep is not first or minimum rep
-                    if (_Frames[_Frame._Loop_frame_idx_sav]._Pos != _Frame._Pos) {
-                        _Frame._Code = _Rx_unwind_ops::_Loop_simple_greedy_intermediaterep;
-                        ++_Frames_count;
+            case _Rx_unwind_ops::_Loop_simple_greedy_lastrep:
+                {
+                    // set up unwinding prior rep and try tail
+                    // when backtracking from last attempted rep
+                    const auto _Node = static_cast<const _Node_rep*>(_Frame._Node);
+                    if ((_Node->_Flags & _Fl_rep_leading) != 0
+                        && _Loop_vals[_Node->_Loop_number]._Loop_length == static_cast<_Diff_type>(1)) {
+                        _Search_advance = _Tgt_state._Cur;
                     }
+                }
+                [[fallthrough]];
+
+            case _Rx_unwind_ops::_Loop_simple_greedy_subtype:
+                {
+                    // set up unwinding prior rep and try tail
+                    // when backtracking from rep in an accelerated subtype
+                    const auto _Node = static_cast<const _Node_rep*>(_Frame._Node);
+
+                    _Nx             = _Node->_End_rep->_Next;
+                    _Tgt_state._Cur = _Frame._Pos;
+                    _Failed         = false;
+
+                    _Setup_next_simple_greedy_backtrack(_Frame, _Loop_vals[_Node->_Loop_number]);
                 }
                 break;
 
@@ -5490,23 +5547,29 @@ _It _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Skip2(
 
 template <class _Elem, class _RxTraits, class _It, class _Alloc>
 bool _Matcher4<_Elem, _RxTraits, _It, _Alloc>::_Search() {
-    auto _First = _Begin;
-    auto _Last  = _End;
+    auto _First     = _Begin;
+    auto _Last      = _End;
+    _Search_advance = _First;
 
     if (_Match2()) {
         return true;
     }
 
-    if (_First == _Last || (_Mflags & regex_constants::match_continuous) != 0) {
+    if (_Search_advance == _Last || (_Mflags & regex_constants::match_continuous) != 0) {
         return false;
     }
 
     // try more on suffixes
     _Mflags = (_Mflags | regex_constants::match_prev_avail) & ~regex_constants::_Match_not_null;
-    while ((_First = _Skip2(++_First, _Last, _Start, 0U)) != _Last) {
-        _Begin = _First;
+    while ((_First = _Skip2(++_Search_advance, _Last, _Start, 0U)) != _Last) {
+        _Begin          = _First;
+        _Search_advance = _First;
         if (_Match2()) { // found match starting at _First
             return true;
+        }
+
+        if (_Search_advance == _Last) {
+            break;
         }
     }
 
@@ -6337,9 +6400,6 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
             [[fallthrough]];
 
         case _N_neg_assert:
-            // an assert makes a rep non-leading
-            _Leading = false;
-
             // visit the assertion body
             // note _Outer_rep being reset: the assertion regex is completely independent
             _Calculate_loop_simplicity(static_cast<_Node_assert*>(_Nx)->_Child, nullptr, nullptr, true, false);
@@ -6499,8 +6559,6 @@ void _Parser4<_FwdIt, _Elem, _RxTraits>::_Calculate_loop_simplicity(
 
             // a character class referenced makes a rep non-leading
             _Leading = false;
-            break;
-
             break;
 
         case _N_back:
